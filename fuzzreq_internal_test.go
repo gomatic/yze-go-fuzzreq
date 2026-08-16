@@ -15,18 +15,32 @@ import (
 // errStub reports the stubbed directory failure.
 const errStub errs.Const = "stubbed"
 
-// TestHasFuzzTargetFailsOpen pins the probe's fail-open contract: a directory
-// it cannot list, and a test file it cannot parse, both count as fuzzed —
-// the probe demands nothing it could not verify the absence of.
-func TestHasFuzzTargetFailsOpen(t *testing.T) {
+// TestHasFuzzTargetFailsOpenForTheDirectoryAndClosedForAFile pins where the
+// fail-open contract ends. A directory the probe cannot LIST is a state it
+// cannot reason about, so it demands nothing. A single FILE it cannot read or
+// parse is different in kind: it is something an author writes, and crediting
+// it hands out the exemption for a file the go tool refuses to compile.
+//
+// The test this replaces asserted the opposite ("an unparseable test file fails
+// open") and did not even reach that branch — it stubbed readDir to name a file
+// under a directory that does not exist, so what it entered was file-not-found.
+// Both branches are entered here, and named.
+func TestHasFuzzTargetFailsOpenForTheDirectoryAndClosedForAFile(t *testing.T) {
 	original := readDir
 	t.Cleanup(func() { readDir = original })
 
 	readDir = func(dirPath) ([]string, error) { return nil, errStub }
-	assert.True(t, hasFuzzTarget("anywhere"))
+	assert.True(t, hasFuzzTarget("anywhere"), "a directory that cannot be listed demands nothing")
 
-	readDir = func(dirPath) ([]string, error) { return []string{"broken_test.go"}, nil }
-	assert.True(t, hasFuzzTarget("/nonexistent-dir"), "an unparseable test file fails open")
+	readDir = func(dirPath) ([]string, error) { return []string{"absent_test.go"}, nil }
+	assert.False(t, hasFuzzTarget("/nonexistent-dir"), "a file that cannot be read is not evidence")
+
+	files := dirPath(filepath.Join("testdata", "files"))
+	readDir = func(dirPath) ([]string, error) { return []string{"brokenbody_test.go"}, nil }
+	assert.False(t, hasFuzzTarget(files), "a file that cannot be parsed is not evidence")
+
+	readDir = func(dirPath) ([]string, error) { return []string{"plain_test.go"}, nil }
+	assert.True(t, hasFuzzTarget(files), "the positive control: a real target in a readable file")
 }
 
 // TestOSReadDirNames pins the real directory lister, including its error.
@@ -84,12 +98,13 @@ func TestDeclaresFuzz(t *testing.T) {
 	t.Parallel()
 
 	credited := map[string]bool{
-		"plain_test.go":    true,
-		"aliased_test.go":  true,
-		"dot_test.go":      true,
-		"wrongsig_test.go": false,
-		"orphan_test.go":   false,
-		"blank_test.go":    false,
+		"plain_test.go":      true,
+		"aliased_test.go":    true,
+		"dot_test.go":        true,
+		"brokenbody_test.go": false,
+		"wrongsig_test.go":   false,
+		"orphan_test.go":     false,
+		"blank_test.go":      false,
 	}
 	for name, want := range credited {
 		assert.Equal(t, want, declaresFuzz(testFilePath(filepath.Join("testdata", "files", name))), name)
@@ -117,4 +132,47 @@ func TestTestingNameIsTheNameTheFileCanWrite(t *testing.T) {
 		assert.NoError(t, err, src)
 		assert.Equal(t, want, testingName(parsed), src)
 	}
+}
+
+// TestCompiledTestFileReadsTheGoToolsOwnRules pins the evidence side to the
+// files the build actually reads. Every name below sits in testdata/src/unbuilt
+// beside a real, correctly-signed fuzz target, and `go test ./...` prints "[no
+// test files]" for that package — so each is a marker acquired without the
+// property, and none of them leaves an entry in any configuration file.
+func TestCompiledTestFileReadsTheGoToolsOwnRules(t *testing.T) {
+	t.Parallel()
+
+	dir := dirPath(filepath.Join("testdata", "src", "unbuilt"))
+	compiled := map[fileName]bool{
+		".silence_test.go":      false,
+		"_silence_test.go":      false,
+		"tagged_test.go":        false,
+		"unbuilt_plan9_test.go": false,
+		"Cased_Test.go":         false,
+		"fuzztarget.go":         false,
+		"helpertest.go":         false,
+		"absent_test.go":        false,
+	}
+	for name, want := range compiled {
+		assert.Equal(t, want, compiledTestFile(dir, name), string(name))
+	}
+	assert.True(t, compiledTestFile(dirPath(filepath.Join("testdata", "files")), "plain_test.go"),
+		"the positive control: without it every false above could mean the reader never worked")
+}
+
+// TestCompiledTestFileIsDecidedByTheBuildContext pins the verdict on a second
+// platform, which docs/s03.md requires of anything platform-dependent — and
+// this rule is: a constraint is evaluated, so a target compiled only on plan9
+// discharges nothing on darwin and everything on plan9. That is not a defect to
+// remove but a fact to state, because the DRIVER already filtered the entry
+// points the same way; evidence and findings must come from one build.
+func TestCompiledTestFileIsDecidedByTheBuildContext(t *testing.T) {
+	original := buildContext
+	t.Cleanup(func() { buildContext = original })
+
+	dir := dirPath(filepath.Join("testdata", "src", "unbuilt"))
+	buildContext.GOOS = "darwin"
+	assert.False(t, compiledTestFile(dir, "unbuilt_plan9_test.go"), "darwin never compiles it")
+	buildContext.GOOS = "plan9"
+	assert.True(t, compiledTestFile(dir, "unbuilt_plan9_test.go"), "plan9 always does")
 }

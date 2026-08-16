@@ -2,6 +2,7 @@ package fuzzreq
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -17,20 +18,48 @@ type dirPath string
 // readDir is the seam tests replace; production lists the package directory.
 var readDir = osReadDirNames
 
-// hasFuzzTarget reports whether any test file in dir declares a Fuzz
-// function. An unreadable directory or file counts as having one: the probe
-// fails open rather than demand fuzzing it cannot verify the absence of.
+// buildContext decides which files the go tool reads, and is injected so a case
+// can pin the verdict on a platform other than the one the test runs on. It is
+// build.Default rather than a hand-built context because the DRIVER already
+// filtered pass.Files for exactly this configuration: the entry points judged
+// and the evidence credited must come from one build, or a package is asked to
+// fuzz code the same build excluded.
+var buildContext = build.Default
+
+// hasFuzzTarget reports whether any test file in dir declares a Fuzz function.
+// An unreadable DIRECTORY counts as having one — the probe demands nothing it
+// could not verify the absence of — but a file the go tool would not read never
+// counts, whatever it declares.
 func hasFuzzTarget(dir dirPath) bool {
 	names, err := readDir(dir)
 	if err != nil {
 		return true
 	}
 	for _, name := range names {
-		if strings.HasSuffix(name, "_test.go") && declaresFuzz(testFilePath(filepath.Join(string(dir), name))) {
+		if compiledTestFile(dir, fileName(name)) && declaresFuzz(testFilePath(filepath.Join(string(dir), name))) {
 			return true
 		}
 	}
 	return false
+}
+
+// fileName is one entry of a package directory.
+type fileName string
+
+// compiledTestFile reports a file the go tool compiles INTO THE TEST BINARY: an
+// exact `_test.go` suffix, and inclusion decided by go/build itself, which
+// applies the rules the compiler applies — a leading `.` or `_` is skipped, a
+// `//go:build` constraint is evaluated, and a `_GOOS`/`_GOARCH` name suffix is
+// honoured. Evidence that the build never reads is no evidence: `go test`
+// prints "[no test files]" for a package whose only target is one of those, so
+// crediting it exempts a package that fuzzes nothing, with nothing written down
+// anywhere for an inventory to find.
+func compiledTestFile(dir dirPath, name fileName) bool {
+	if !strings.HasSuffix(string(name), "_test.go") {
+		return false
+	}
+	included, err := buildContext.MatchFile(string(dir), string(name))
+	return err == nil && included
 }
 
 // testFilePath locates one test file on disk.
@@ -46,7 +75,7 @@ type testFilePath string
 func declaresFuzz(path testFilePath) bool {
 	parsed, err := parser.ParseFile(token.NewFileSet(), string(path), nil, parser.SkipObjectResolution)
 	if err != nil {
-		return true
+		return false
 	}
 	local := testingName(parsed)
 	for _, decl := range parsed.Decls {
