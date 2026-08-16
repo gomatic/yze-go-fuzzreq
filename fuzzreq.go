@@ -156,9 +156,13 @@ func untrustedParam(pass *analysis.Pass, decl *ast.FuncDecl) (untrustedName, boo
 	return "", false
 }
 
-// untrustedType classifies a bare untrusted parameter type.
+// untrustedType classifies a bare untrusted parameter type. The type is
+// UNALIASED first: an alias declares no type, so `type Payload = []byte` is a
+// spelling of []byte and carries none of the vocabulary the named-type
+// exemption exists for — types.Identical(Payload, []byte) holds, which is why
+// returnsError already sees through an alias of error.
 func untrustedType(t types.Type) (untrustedName, bool) {
-	switch resolved := t.(type) {
+	switch resolved := types.Unalias(t).(type) {
 	case *types.Basic:
 		if resolved.Kind() == types.String {
 			return "string", true
@@ -175,9 +179,10 @@ func untrustedType(t types.Type) (untrustedName, bool) {
 	return "", false
 }
 
-// isByte reports the byte element type.
+// isByte reports the byte element type, unaliased for the same reason
+// untrustedType unaliases: `type B = byte` makes []B a spelling of []byte.
 func isByte(t types.Type) bool {
-	basic, ok := t.(*types.Basic)
+	basic, ok := types.Unalias(t).(*types.Basic)
 	return ok && basic.Kind() == types.Byte
 }
 
