@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
 	"path/filepath"
 	"testing"
@@ -185,4 +186,40 @@ func TestCompiledTestFileIsDecidedByTheBuildContext(t *testing.T) {
 	assert.False(t, compiledTestFile(dir, "unbuilt_plan9_test.go"), "darwin never compiles it")
 	buildContext.GOOS = "plan9"
 	assert.True(t, compiledTestFile(dir, "unbuilt_plan9_test.go"), "plan9 always does")
+}
+
+// TestIOStreamNameNeedsIOsOwnReader pins the guard that keeps the io clause
+// from dereferencing nothing. The lookup is what decides "admits a stream", and
+// it is scoped to the DECLARING package — so a package answering to io's path
+// while declaring no Reader is the one input that reaches it. No source file
+// can produce that (the real io always has Reader, and any other package has a
+// different path), so the case is built rather than parsed.
+func TestIOStreamNameNeedsIOsOwnReader(t *testing.T) {
+	t.Parallel()
+
+	pkg := types.NewPackage("io", "io")
+	obj := types.NewTypeName(token.NoPos, pkg, "Stream", nil)
+	named := types.NewNamed(obj, types.NewInterfaceType(nil, nil), nil)
+	pkg.MarkComplete()
+
+	name, ok := ioStreamName(named)
+	assert.False(t, ok, "no Reader in scope, so nothing is known to admit a stream")
+	assert.Empty(t, name)
+}
+
+// TestUntrustedTypeJudgesAVariadicAsTheSliceItIs pins the asymmetry the package
+// comment declares, at the type level where a variadic parameter actually
+// arrives: `raw ...byte` is []byte and reported, `raw ...string` is []string and
+// is not. It is the one escape this rule leaves open on purpose, so it is
+// asserted rather than left to whichever fixture happens to exercise it.
+func TestUntrustedTypeJudgesAVariadicAsTheSliceItIs(t *testing.T) {
+	t.Parallel()
+
+	name, ok := untrustedType(types.NewSlice(types.Typ[types.Byte]))
+	assert.True(t, ok, "the slice a `...byte` parameter is")
+	assert.Equal(t, untrustedName("[]byte"), name)
+
+	name, ok = untrustedType(types.NewSlice(types.Typ[types.String]))
+	assert.False(t, ok, "the slice a `...string` parameter is, which the rule does not name")
+	assert.Empty(t, name)
 }
