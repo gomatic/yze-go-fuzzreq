@@ -2,7 +2,9 @@ package fuzzreq
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
+	"path/filepath"
 	"testing"
 
 	errs "github.com/gomatic/go-error"
@@ -69,4 +71,50 @@ func TestInTestFileComparesTheSuffixExactly(t *testing.T) {
 		"the position machinery does adopt the claimed name — without this the assertion below holds vacuously")
 	assert.False(t, inTestFile(&analysis.Pass{Fset: fset}, declAt(claimant.Pos(1))),
 		"a //line directive is what AddLineColumnInfo compiles to, and it renames nothing the go tool reads")
+}
+
+// TestDeclaresFuzz pins the marker to the signature the go tool requires,
+// against files no package loader can read. That is not a convenience: cmd/go
+// REFUSES a Fuzz-named free function of any other signature — "wrong signature
+// for FuzzBad, must be: func FuzzBad(f *testing.F)" — so a package carrying one
+// does not load, and analysistest cannot express the case at all. The corpus
+// covers the two forgeries a package can carry and still build (a lower-cased
+// name and a method); these are the rest.
+func TestDeclaresFuzz(t *testing.T) {
+	t.Parallel()
+
+	credited := map[string]bool{
+		"plain_test.go":    true,
+		"aliased_test.go":  true,
+		"dot_test.go":      true,
+		"wrongsig_test.go": false,
+		"orphan_test.go":   false,
+		"blank_test.go":    false,
+	}
+	for name, want := range credited {
+		assert.Equal(t, want, declaresFuzz(testFilePath(filepath.Join("testdata", "files", name))), name)
+	}
+}
+
+// TestTestingNameIsTheNameTheFileCanWrite pins the invariant testingName
+// documents: the empty name is returned exactly when the file CANNOT write the
+// type, so no second guard is needed to refuse a target it names anyway. A
+// blank import binds nothing and a missing import binds nothing; both are the
+// empty name, and no identifier is spelled "".
+func TestTestingNameIsTheNameTheFileCanWrite(t *testing.T) {
+	t.Parallel()
+
+	bindings := map[string]testingLocal{
+		`package p; import "testing"`:      "testing",
+		`package p; import tst "testing"`:  "tst",
+		`package p; import . "testing"`:    ".",
+		`package p; import _ "testing"`:    "",
+		`package p`:                        "",
+		`package p; import "text/testing"`: "",
+	}
+	for src, want := range bindings {
+		parsed, err := parser.ParseFile(token.NewFileSet(), "p.go", src, parser.SkipObjectResolution)
+		assert.NoError(t, err, src)
+		assert.Equal(t, want, testingName(parsed), src)
+	}
 }

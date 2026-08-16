@@ -15,10 +15,7 @@ package fuzzreq
 
 import (
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"go/types"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -30,12 +27,6 @@ import (
 
 // message is the diagnostic for an unfuzzed untrusted-input entry point.
 const message = "exported %s consumes untrusted input (%s) and the package has no fuzz target; add a Fuzz target that asserts a property"
-
-// dirPath is a package's directory on disk.
-type dirPath string
-
-// readDir is the seam tests replace; production lists the package directory.
-var readDir = osReadDirNames
 
 // Analyzer reports untrusted-input entry points in fuzz-free packages.
 var Analyzer = &analysis.Analyzer{
@@ -82,39 +73,6 @@ func isScaffolding(pass *analysis.Pass) bool {
 // packageDir is the directory holding the pass's files.
 func packageDir(pass *analysis.Pass) dirPath {
 	return dirPath(filepath.Dir(pass.Fset.File(pass.Files[0].Pos()).Name()))
-}
-
-// hasFuzzTarget reports whether any test file in dir declares a Fuzz
-// function. An unreadable directory or file counts as having one: the probe
-// fails open rather than demand fuzzing it cannot verify the absence of.
-func hasFuzzTarget(dir dirPath) bool {
-	names, err := readDir(dir)
-	if err != nil {
-		return true
-	}
-	for _, name := range names {
-		if strings.HasSuffix(name, "_test.go") && declaresFuzz(testFilePath(filepath.Join(string(dir), name))) {
-			return true
-		}
-	}
-	return false
-}
-
-// testFilePath locates one test file on disk.
-type testFilePath string
-
-// declaresFuzz reports whether the file declares a top-level Fuzz* function.
-func declaresFuzz(path testFilePath) bool {
-	parsed, err := parser.ParseFile(token.NewFileSet(), string(path), nil, parser.SkipObjectResolution)
-	if err != nil {
-		return true
-	}
-	for _, decl := range parsed.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Fuzz") {
-			return true
-		}
-	}
-	return false
 }
 
 // checkEntryPoint reports an exported function taking untrusted input and
@@ -204,17 +162,4 @@ func isByte(t types.Type) bool {
 // isIOReader reports io's Reader interface by declaring path and name.
 func isIOReader(named *types.Named) bool {
 	return named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "io" && named.Obj().Name() == "Reader"
-}
-
-// osReadDirNames lists the entry names of a directory.
-func osReadDirNames(dir dirPath) ([]string, error) {
-	entries, err := os.ReadDir(string(dir))
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		names = append(names, entry.Name())
-	}
-	return names, nil
 }

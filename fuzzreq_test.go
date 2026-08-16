@@ -14,7 +14,7 @@ import (
 // error-free, and unexported shapes do not; and the package WITH a fuzz
 // target owes nothing.
 func TestUnfuzzedEntryPoints(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), fuzzreq.Analyzer, "a", "b")
+	analysistest.Run(t, analysistest.TestData(), fuzzreq.Analyzer, "a", "aliased", "b", "bare", "signature")
 }
 
 // TestRegistrationIsWellFormed pins the yze wiring.
