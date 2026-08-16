@@ -25,9 +25,14 @@
 // Spelling is never vocabulary. An ALIAS is unwrapped — `type Payload = []byte`
 // declares no type — and so is a TYPE PARAMETER whose constraint admits exactly
 // one type, because `func Parse[T ~[]byte](raw T) error` is []byte at every
-// call site and inference leaves every caller unchanged. A VARIADIC parameter
-// is judged by what a caller passes as well as by the slice the body sees, so
-// `raw ...string` is bare strings.
+// call site and inference leaves every caller unchanged.
+//
+// A VARIADIC parameter is judged as the SLICE its body sees and not as its
+// element, so `raw ...byte` is []byte and reported while `raw ...string` is
+// []string and is not. That is a KNOWN HOLE — adding `...` costs one token and
+// changes no call site — left open because closing it was measured to cost 293
+// findings nobody can act on. See untrustedType, and
+// `fuzzreq.variadic-escape-needs-a-discriminator`.
 //
 // # What is exempt, and why
 //
@@ -47,11 +52,19 @@
 // test files both count — and only files the BUILD READS count, decided by
 // go/build itself: a leading `.` or `_`, a //go:build constraint, and a
 // `_GOOS`/`_GOARCH` name suffix all exclude a file, and the `_test.go` suffix
-// is matched exactly, as the go tool matches it. Evaluating a constraint makes
-// the verdict configuration-relative — a target compiled only on plan9
-// discharges nothing on darwin — which is deliberate: the driver already
-// filtered the judged declarations the same way, and evidence and findings must
-// come from one build.
+// is matched exactly, as the go tool matches it.
+//
+// Evaluating a constraint makes the verdict configuration-relative: a target
+// compiled only on plan9 discharges nothing on darwin. GOOS and GOARCH agree
+// with the driver's, because both read the environment — but BUILD TAGS DO NOT.
+// go/build's default context carries no tags, so under `go vet -tags=integration`
+// the driver judges a tagged entry point while the evidence reader skips the
+// tagged fuzz file beside it, and go/analysis exposes no way to ask which tags
+// the driver was given. That disagreement is a defect and it is recorded, not
+// papered over: `fuzzreq.evidence-reads-the-tags-the-driver-was-given`. It is
+// the same question `errtested` escalated — go/build cannot tell
+// `//go:build integration` from `//go:build never_ever_built` — and it is the
+// owner's to settle, so it is stated here rather than guessed at.
 //
 // Within such a file, a target is what `go test` would run: a free function
 // named by cmd/go's own isTest rule for the Fuzz prefix, taking exactly one
@@ -82,7 +95,7 @@ const message = "exported %s consumes untrusted input (%s) and the package has n
 // Analyzer reports untrusted-input entry points in fuzz-free packages.
 var Analyzer = &analysis.Analyzer{
 	Name:     "fuzzreq",
-	Doc:      "reports an exported func taking []byte/string/io.Reader and returning error, in a package with no Fuzz target",
+	Doc:      "reports an exported func taking a bare []byte/string or an io stream and returning a failure, in a package with no Fuzz target",
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      run,
 }
@@ -173,98 +186,4 @@ func returnsError(pass *analysis.Pass, decl *ast.FuncDecl) bool {
 func isError(t types.Type) bool {
 	iface, ok := types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
 	return ok && t != nil && types.Implements(t, iface)
-}
-
-// untrustedName describes which untrusted shape a parameter carries.
-type untrustedName string
-
-// untrustedParam reports the first parameter carrying a BARE untrusted type:
-// []byte, string, or an io type that admits a stream. A named domain type is
-// deliberate vocabulary and does not count.
-func untrustedParam(pass *analysis.Pass, decl *ast.FuncDecl) (untrustedName, bool) {
-	for _, field := range decl.Type.Params.List {
-		if input, ok := untrustedType(pass.TypesInfo.TypeOf(field.Type)); ok {
-			return input, true
-		}
-	}
-	return "", false
-}
-
-// untrustedType classifies a bare untrusted parameter type.
-//
-// A VARIADIC parameter arrives here as the SLICE its body sees and is never
-// judged by its element, so `raw ...byte` is []byte and reported while `raw
-// ...string` is []string and is not. That asymmetry is deliberate and it is
-// measured: judging the element as well adds 293 findings across 262 fleet
-// modules, 286 of them on `args ...domain.Argument` — the variadic string every
-// domain Run takes because go-app's Runner contract requires it, whose author
-// cannot make Argument a defined type without leaving that contract and so can
-// answer only with a baseline.
-//
-// The type is UNALIASED first: an alias declares no type, so `type Payload = []byte` is a
-// spelling of []byte and carries none of the vocabulary the named-type
-// exemption exists for — types.Identical(Payload, []byte) holds, which is why
-// returnsError already sees through an alias of error.
-func untrustedType(t types.Type) (untrustedName, bool) {
-	switch resolved := coreType(types.Unalias(t)).(type) {
-	case *types.Basic:
-		if resolved.Kind() == types.String {
-			return "string", true
-		}
-	case *types.Slice:
-		if isByte(resolved.Elem()) {
-			return "[]byte", true
-		}
-	case *types.Named:
-		return ioStreamName(resolved)
-	}
-	return "", false
-}
-
-// coreType is the one type a type parameter's constraint admits, or the type
-// itself. `func Parse[T ~[]byte](raw T) error` is []byte at every call site and
-// inference leaves every caller unchanged, so a type parameter is a spelling of
-// what it constrains — the same reason an alias is.
-func coreType(t types.Type) types.Type {
-	param, ok := t.(*types.TypeParam)
-	if !ok {
-		return t
-	}
-	iface, ok := param.Constraint().Underlying().(*types.Interface)
-	if !ok || iface.NumEmbeddeds() != 1 {
-		return t
-	}
-	union, ok := iface.EmbeddedType(0).(*types.Union)
-	if !ok || union.Len() != 1 {
-		return t
-	}
-	return types.Unalias(union.Term(0).Type())
-}
-
-// isByte reports the byte element type, unaliased for the same reason
-// untrustedType unaliases: `type B = byte` makes []B a spelling of []byte.
-func isByte(t types.Type) bool {
-	basic, ok := types.Unalias(t).(*types.Basic)
-	return ok && basic.Kind() == types.Byte
-}
-
-// ioStreamName reports a type DECLARED IN PACKAGE io that admits an untrusted
-// stream — io.Reader and every interface embedding it, io.ReadCloser
-// and io.ReadSeeker among them. Reading the name alone exempted them, and
-// widening a parameter from Reader to ReadCloser is one word that changes
-// nothing about what the function consumes.
-func ioStreamName(named *types.Named) (untrustedName, bool) {
-	obj := named.Obj()
-	if obj.Pkg() == nil || obj.Pkg().Path() != "io" {
-		return "", false
-	}
-	reader := obj.Pkg().Scope().Lookup("Reader")
-	if reader == nil {
-		return "", false
-	}
-	stream, ok := reader.Type().Underlying().(*types.Interface)
-	if !ok || !types.Implements(named, stream) {
-		return "", false
-	}
-	return untrustedName("io." + obj.Name()), true
 }

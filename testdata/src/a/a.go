@@ -4,6 +4,7 @@ package a
 import (
 	"io"
 
+	notio "notio"
 	"stream"
 )
 
@@ -233,6 +234,138 @@ func Wrap(e error) error {
 // Anything is constrained by `any`, whose constraint interface embeds no term
 // at all: there is nothing for a caller to be passing, so nothing is resolved.
 func Anything[T any](raw T) error {
+	_ = raw
+	return nil
+}
+
+// Second takes its untrusted parameter SECOND. Every other fixture in this
+// corpus puts it first, and `func Parse(ctx context.Context, raw []byte) error`
+// is the commonest real shape there is — a rule reading only the first
+// parameter passes every one of them and reports none of them.
+func Second(s Session, raw []byte) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = s
+	_ = raw
+	return nil
+}
+
+// Session is an ordinary domain type, and not untrusted.
+type Session struct{ id string }
+
+// Parser carries a method wearing the entry-point shape.
+type Parser struct{}
+
+// Parse is a METHOD, which the doc declares out of scope — and until this
+// fixture existed, deleting that exemption changed nothing in the suite.
+func (Parser) Parse(raw []byte) error {
+	_ = raw
+	return nil
+}
+
+// Count takes a bare int. Every other fixture's basic parameter is a string, so
+// the BasicKind of a parameter was a dimension held constant at one value, and
+// widening `Kind() == types.String` to a second kind passed the whole suite.
+func Count(n int) error {
+	_ = n
+	return nil
+}
+
+// Runes takes a []rune. The element kind was held constant the same way, so
+// widening isByte to accept a rune passed too.
+func Runes(raw []rune) error {
+	_ = raw
+	return nil
+}
+
+// Chunks is a constraint interface over one term.
+type Chunks interface{ ~[]byte }
+
+// Wrapped embeds it, at the depth the walk allows.
+type Wrapped interface{ Chunks }
+
+// Deeper embeds that, reaching the term at exactly the depth the walk allows.
+type Deeper interface{ Wrapped }
+
+// Deepest embeds that, one level past it.
+type Deepest interface{ Deeper }
+
+// Bare takes the constraint spelled as a bare embedded type.
+func Bare[T []byte](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = raw
+	return nil
+}
+
+// Aliased takes it spelled as an alias of that type.
+func Aliased[T Blob](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = raw
+	return nil
+}
+
+// Enclosed takes the alias wrapped in an explicit interface.
+func Enclosed[T interface{ Blob }](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = raw
+	return nil
+}
+
+// Explicit takes the bare type wrapped in an explicit interface — one character
+// from Scan's `~[]byte`, with a strictly NARROWER type set.
+func Explicit[T interface{ []byte }](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = raw
+	return nil
+}
+
+// Tilde takes the tilde form of the alias, which is where the walk must unalias
+// the union's term rather than the embedded type.
+func Tilde[T ~Blob](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = raw
+	return nil
+}
+
+// Nested reaches the term through a named constraint embedding another.
+func Nested[T Wrapped](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = raw
+	return nil
+}
+
+// AtTheBound is the same chain at exactly the depth the walk allows, which is
+// the reported side of that boundary.
+func AtTheBound[T Deeper](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
+	_ = raw
+	return nil
+}
+
+// TooDeep is one level longer: past the bound nothing resolves, and this
+// silence is the bound's own boundary rather than a property of the type. Both
+// sides are present so a widened or narrowed bound fails one of them.
+func TooDeep[T Deepest](raw T) error {
+	_ = raw
+	return nil
+}
+
+// Measured is constrained to []byte AND a method, so its type set holds only
+// DEFINED types carrying that method — no caller can pass a bare []byte, and
+// the vocabulary the exemption exists for is exactly what the constraint
+// demands.
+func Measured[T interface {
+	~[]byte
+	Len() int
+}](raw T) error {
+	_ = raw
+	return nil
+}
+
+// Local takes a Body from a package NAMED io whose path is not io. The clause
+// is keyed on the path, and this is the one-deviation near-miss of it.
+func Local(b notio.Body) error {
+	_, err := io.ReadAll(b)
+	return err
+}
+
+// Boxed is an alias OF a constraint interface, which puts the alias at the
+// embedding rather than at the term.
+type Boxed = interface{ ~[]byte }
+
+// Wrapped2 takes the alias of a constraint.
+func Wrapped2[T Boxed](raw T) error { // want `consumes untrusted input \(\[\]byte\)`
 	_ = raw
 	return nil
 }

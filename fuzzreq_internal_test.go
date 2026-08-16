@@ -162,6 +162,7 @@ func TestCompiledTestFileReadsTheGoToolsOwnRules(t *testing.T) {
 		"Cased_Test.go":         false,
 		"fuzztarget.go":         false,
 		"helpertest.go":         false,
+		"zz_test.golden.go":     false,
 		"absent_test.go":        false,
 	}
 	for name, want := range compiled {
@@ -207,11 +208,17 @@ func TestIOStreamNameNeedsIOsOwnReader(t *testing.T) {
 	assert.Empty(t, name)
 }
 
-// TestUntrustedTypeJudgesAVariadicAsTheSliceItIs pins the asymmetry the package
-// comment declares, at the type level where a variadic parameter actually
-// arrives: `raw ...byte` is []byte and reported, `raw ...string` is []string and
-// is not. It is the one escape this rule leaves open on purpose, so it is
-// asserted rather than left to whichever fixture happens to exercise it.
+// TestUntrustedTypeJudgesAVariadicAsTheSliceItIs pins WHERE THE RULE IS TODAY,
+// at the type level where a variadic parameter actually arrives: `raw ...byte`
+// is []byte and reported, `raw ...string` is []string and is not.
+//
+// The second assertion pins a HOLE, not a contract, and says so where the next
+// reader will look: adding `...` to a string parameter costs one token and
+// changes no call site. It is asserted because closing it was measured to cost
+// 293 fleet findings nobody can act on, so the silence must not change by
+// accident before a discriminator exists — `fuzzreq.variadic-escape-needs-a-discriminator`.
+// A test asserting a limitation is a defect until the limitation is closed; this
+// one is recorded as such rather than described as a design.
 func TestUntrustedTypeJudgesAVariadicAsTheSliceItIs(t *testing.T) {
 	t.Parallel()
 
@@ -220,6 +227,50 @@ func TestUntrustedTypeJudgesAVariadicAsTheSliceItIs(t *testing.T) {
 	assert.Equal(t, untrustedName("[]byte"), name)
 
 	name, ok = untrustedType(types.NewSlice(types.Typ[types.String]))
-	assert.False(t, ok, "the slice a `...string` parameter is, which the rule does not name")
+	assert.False(t, ok, "the slice a `...string` parameter is — the open hole, not a contract")
 	assert.Empty(t, name)
+}
+
+// TestSoleEmbeddedNeedsExactlyOneEmbeddingAndNoMethod pins the invariant
+// soleEmbedded documents, at the level where a constraint is actually decided.
+// The interfaces are BUILT rather than parsed: the shapes below include ones
+// no Go source spells the same way twice, and go/types is the authority on
+// which representation each spelling produces.
+func TestSoleEmbeddedNeedsExactlyOneEmbeddingAndNoMethod(t *testing.T) {
+	t.Parallel()
+
+	bytes := types.NewSlice(types.Typ[types.Byte])
+	sole := types.NewInterfaceType(nil, []types.Type{bytes})
+	sole.Complete()
+	resolved, ok := soleEmbedded(sole)
+	assert.True(t, ok, "one embedded type and no method is what resolves")
+	assert.Equal(t, bytes, resolved)
+
+	oneTerm := types.NewUnion([]*types.Term{types.NewTerm(true, bytes)})
+	union := types.NewInterfaceType(nil, []types.Type{oneTerm})
+	union.Complete()
+	resolved, ok = soleEmbedded(union)
+	assert.True(t, ok, "a union of exactly one term is the same one type")
+	assert.Equal(t, bytes, resolved)
+
+	two := types.NewUnion([]*types.Term{
+		types.NewTerm(true, bytes),
+		types.NewTerm(true, types.Typ[types.String]),
+	})
+	wide := types.NewInterfaceType(nil, []types.Type{two})
+	wide.Complete()
+	_, ok = soleEmbedded(wide)
+	assert.False(t, ok, "two terms admit two types, and a caller passes either")
+
+	none := types.NewInterfaceType(nil, nil)
+	none.Complete()
+	_, ok = soleEmbedded(none)
+	assert.False(t, ok, "`any` embeds nothing, so there is nothing to resolve")
+
+	result := types.NewTuple(types.NewParam(token.NoPos, nil, "", types.Typ[types.Int]))
+	length := types.NewFunc(token.NoPos, nil, "Len", types.NewSignatureType(nil, nil, nil, nil, result, false))
+	withMethod := types.NewInterfaceType([]*types.Func{length}, []types.Type{bytes})
+	withMethod.Complete()
+	_, ok = soleEmbedded(withMethod)
+	assert.False(t, ok, "a method means only DEFINED types satisfy it — the vocabulary the rule exempts")
 }

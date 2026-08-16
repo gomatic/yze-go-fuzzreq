@@ -19,11 +19,15 @@ type dirPath string
 var readDir = osReadDirNames
 
 // buildContext decides which files the go tool reads, and is injected so a case
-// can pin the verdict on a platform other than the one the test runs on. It is
-// build.Default rather than a hand-built context because the DRIVER already
-// filtered pass.Files for exactly this configuration: the entry points judged
-// and the evidence credited must come from one build, or a package is asked to
-// fuzz code the same build excluded.
+// can pin the verdict on a platform other than the one the test runs on.
+//
+// It is build.Default, whose GOOS and GOARCH come from the environment and so
+// agree with the driver's — but whose BuildTags are EMPTY, where the driver's
+// may not be. Under `go vet -tags=integration` the driver judges an entry point
+// in a tagged file while this reader skips the tagged fuzz file beside it, and
+// go/analysis offers no way to ask which tags the driver was given. That is a
+// known gap rather than a setting to tune, and it is recorded as
+// `fuzzreq.evidence-reads-the-tags-the-driver-was-given`.
 var buildContext = build.Default
 
 // hasFuzzTarget reports whether any test file in dir declares a Fuzz function.
