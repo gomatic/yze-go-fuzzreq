@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"path/filepath"
 	"testing"
 
@@ -43,12 +44,21 @@ func TestHasFuzzTargetFailsOpenForTheDirectoryAndClosedForAFile(t *testing.T) {
 	assert.True(t, hasFuzzTarget(files), "the positive control: a real target in a readable file")
 }
 
-// TestOSReadDirNames pins the real directory lister, including its error.
+// TestOSReadDirNames pins the real directory lister, including WHICH error it
+// produces. The contract is that the os error reaches the caller unwrapped, so
+// hasFuzzTarget's fail-open branch is entered by a directory that is genuinely
+// absent and not by anything else; asserting only that "an error occurred"
+// holds for any failure whatever and so tests nothing about that contract.
 func TestOSReadDirNames(t *testing.T) {
 	t.Parallel()
 
-	_, err := osReadDirNames("/nonexistent-directory-for-fuzzreq")
-	assert.Error(t, err)
+	names, err := osReadDirNames("/nonexistent-directory-for-fuzzreq")
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+	assert.Nil(t, names, "no names come back with the error")
+
+	names, err = osReadDirNames(dirPath(filepath.Join("testdata", "files")))
+	assert.NoError(t, err, "the positive control: the assertion above is about the directory, not the lister")
+	assert.Contains(t, names, "plain_test.go")
 }
 
 // declAt is a function declaration positioned in one file of a FileSet.
