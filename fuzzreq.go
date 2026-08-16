@@ -120,12 +120,27 @@ func declaresFuzz(path testFilePath) bool {
 // checkEntryPoint reports an exported function taking untrusted input and
 // returning an error.
 func checkEntryPoint(pass *analysis.Pass, decl *ast.FuncDecl) {
-	if decl.Recv != nil || !ast.IsExported(decl.Name.Name) || !returnsError(pass, decl) {
+	if inTestFile(pass, decl) || decl.Recv != nil || !ast.IsExported(decl.Name.Name) || !returnsError(pass, decl) {
 		return
 	}
 	if input, ok := untrustedParam(pass, decl); ok {
 		pass.Reportf(decl.Pos(), message, decl.Name.Name, input)
 	}
+}
+
+// inTestFile reports a declaration the go tool compiles only into a test
+// binary. Such a declaration is exported to the package's own tests and to
+// nothing else: no importer can reach it, `go test -fuzz` cannot fuzz it, and
+// the export_test idiom exists precisely to export it — so the remedy this
+// diagnostic prescribes is not available to its author.
+//
+// The name comes from the FileSet's own entry rather than from a Position,
+// which applies //line directives: a decision ABOUT a file must read something
+// that file cannot rewrite. The suffix is compared exactly, because the go
+// tool's own rule is exact — `httptest.go`, `a_test.golden.go` and
+// `Cased_Test.go` are ordinary compiled source, and each is a fixture.
+func inTestFile(pass *analysis.Pass, decl *ast.FuncDecl) bool {
+	return strings.HasSuffix(pass.Fset.File(decl.Pos()).Name(), "_test.go")
 }
 
 // returnsError reports whether the declaration's results include error.

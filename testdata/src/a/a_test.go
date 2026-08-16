@@ -9,3 +9,13 @@ func TestParse(t *testing.T) {
 		t.Fatalf("Parse = %q, %v", decoded, err)
 	}
 }
+
+// Helper is the export_test idiom: exported from the in-package test variant so
+// a sibling test can reach an unexported symbol. It is not part of the
+// package's surface — no importer can call it, `go test -fuzz` cannot fuzz it,
+// and unexporting a file whose whole purpose is to export is not a remedy. The
+// rule judges PRODUCTION declarations, so nothing is reported here.
+func Helper(raw []byte) error {
+	_ = raw
+	return nil
+}
